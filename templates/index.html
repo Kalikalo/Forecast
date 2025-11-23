@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forecast Platform - SARIMAX Time Series Forecasting</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Forecast Platform</h1>
+            <p class="subtitle">SARIMAX Time Series Forecasting</p>
+        </header>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <main>
+            <form action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data" id="uploadForm">
+                <div class="upload-section">
+                    <div class="file-drop-zone" id="dropZone">
+                        <input type="file" name="file" id="fileInput" accept=".csv,.xlsx,.xls" required>
+                        <div class="drop-content">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17,8 12,3 7,8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                            <p>Drag & drop your file here or <span class="browse-link">browse</span></p>
+                            <p class="file-types">Supported: CSV, Excel (.xlsx, .xls)</p>
+                        </div>
+                        <div class="file-name" id="fileName"></div>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h2>Forecast Settings</h2>
+
+                    <div class="settings-grid">
+                        <div class="form-group">
+                            <label for="freq">Data Frequency</label>
+                            <select name="freq" id="freq">
+                                <option value="Q">Quarterly</option>
+                                <option value="M">Monthly</option>
+                                <option value="W">Weekly</option>
+                                <option value="D">Daily</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="backtest_periods">Backtest Periods</label>
+                            <input type="number" name="backtest_periods" id="backtest_periods" value="8" min="2" max="50">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="forecast_periods">Forecast Periods</label>
+                            <input type="number" name="forecast_periods" id="forecast_periods" value="4" min="1" max="24">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="seasonal_period">Seasonal Period</label>
+                            <input type="number" name="seasonal_period" id="seasonal_period" value="4" min="1" max="52">
+                        </div>
+
+                        <div class="form-group full-width">
+                            <label for="target_column">Target Column (optional)</label>
+                            <input type="text" name="target_column" id="target_column" placeholder="Auto-detect first numeric column">
+                        </div>
+                    </div>
+
+                    <div class="checkboxes">
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="include_backtest" checked>
+                            <span>Include Backtest Results</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" name="include_future" checked>
+                            <span>Include Future Forecast</span>
+                        </label>
+                    </div>
+                </div>
+
+                <button type="submit" class="submit-btn" id="submitBtn">
+                    <span class="btn-text">Generate Forecast</span>
+                    <span class="btn-loading" style="display: none;">
+                        <svg class="spinner" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="30 70"/>
+                        </svg>
+                        Processing...
+                    </span>
+                </button>
+            </form>
+        </main>
+
+        <section class="info-section">
+            <h2>How It Works</h2>
+            <div class="info-grid">
+                <div class="info-card">
+                    <div class="info-icon">1</div>
+                    <h3>Upload Data</h3>
+                    <p>Upload your time series data in CSV or Excel format with a date column and numeric values.</p>
+                </div>
+                <div class="info-card">
+                    <div class="info-icon">2</div>
+                    <h3>Configure</h3>
+                    <p>Set your forecast parameters: frequency, periods to forecast, and seasonal settings.</p>
+                </div>
+                <div class="info-card">
+                    <div class="info-icon">3</div>
+                    <h3>Download</h3>
+                    <p>Get your forecast CSV with predictions and confidence intervals.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="output-section">
+            <h2>Output Format</h2>
+            <p>The forecast CSV includes:</p>
+            <ul>
+                <li><strong>as_of</strong> - Forecast origin date</li>
+                <li><strong>h</strong> - Forecast horizon (periods ahead)</li>
+                <li><strong>Date</strong> - Forecast target date</li>
+                <li><strong>actual</strong> - Actual value (if available)</li>
+                <li><strong>mean</strong> - Point forecast</li>
+                <li><strong>Confidence intervals</strong> - 95%, 90%, 80%, 60% bounds</li>
+                <li><strong>type</strong> - "backtest" or "future_forecast"</li>
+            </ul>
+        </section>
+
+        <footer>
+            <p>SARIMAX Forecast Platform</p>
+        </footer>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileName = document.getElementById('fileName');
+        const form = document.getElementById('uploadForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const btnText = submitBtn.querySelector('.btn-text');
+        const btnLoading = submitBtn.querySelector('.btn-loading');
+
+        // File drop handling
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('drag-over');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                updateFileName(files[0].name);
+            }
+        });
+
+        dropZone.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                updateFileName(fileInput.files[0].name);
+            }
+        });
+
+        function updateFileName(name) {
+            fileName.textContent = name;
+            fileName.style.display = 'block';
+            dropZone.classList.add('has-file');
+        }
+
+        // Form submission loading state
+        form.addEventListener('submit', () => {
+            btnText.style.display = 'none';
+            btnLoading.style.display = 'inline-flex';
+            submitBtn.disabled = true;
+        });
+    </script>
+</body>
+</html>
