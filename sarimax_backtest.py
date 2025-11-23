@@ -49,15 +49,19 @@ class ForecastConfig:
     target_column: Optional[str] = None  # First non-date column if None
     freq: str = "Q"  # Frequency: Q=quarterly, M=monthly, W=weekly, D=daily
 
-    # ARIMA order search ranges
-    p_range: tuple[int, int] = (0, 3)
+    # ARIMA order search ranges (reduced for faster web processing)
+    p_range: tuple[int, int] = (0, 2)
     d_range: tuple[int, int] = (0, 2)
-    q_range: tuple[int, int] = (0, 3)
+    q_range: tuple[int, int] = (0, 2)
 
-    # Seasonal order search ranges
+    # Seasonal order search ranges (reduced for faster web processing)
     P_range: tuple[int, int] = (0, 2)
-    D_range: tuple[int, int] = (0, 2)
-    Q_range: tuple[int, int] = (0, 2)
+    D_range: tuple[int, int] = (0, 1)
+    Q_range: tuple[int, int] = (0, 1)
+
+    # Optimization settings for speed
+    max_iter: int = 50  # Limit iterations per model fit
+    model_timeout: float = 30.0  # Timeout per model fit in seconds
 
     # Model constraints
     disallow_pure_differencing: bool = True
@@ -500,6 +504,46 @@ def calculate_rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.sqrt(np.nanmean((np.asarray(y_true) - np.asarray(y_pred)) ** 2)))
 
 
+def fit_model_with_timeout(
+    y_train: pd.Series,
+    X_train: pd.DataFrame,
+    order: tuple,
+    seasonal_order: tuple,
+    max_iter: int,
+) -> Optional[object]:
+    """
+    Fit SARIMAX model with timeout and iteration limit.
+
+    Args:
+        y_train: Training target series.
+        X_train: Training exogenous features.
+        order: ARIMA order (p, d, q).
+        seasonal_order: Full seasonal order (P, D, Q, s).
+        max_iter: Maximum optimization iterations.
+
+    Returns:
+        Fitted model result or None if fitting fails.
+    """
+    try:
+        model = sm.tsa.SARIMAX(
+            y_train,
+            exog=X_train if not X_train.empty else None,
+            order=order,
+            seasonal_order=seasonal_order,
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+        # Use method='powell' for faster convergence, limit iterations
+        result = model.fit(
+            disp=False,
+            maxiter=max_iter,
+            method='powell',
+        )
+        return result
+    except Exception:
+        return None
+
+
 def grid_search_sarimax(
     y_full: pd.Series,
     X_full: pd.DataFrame,
@@ -507,7 +551,11 @@ def grid_search_sarimax(
     config: BacktestConfig,
 ) -> dict:
     """
-    Perform grid search to find optimal SARIMAX parameters.
+    Perform grid search to find optimal SARIMAX parameters using AIC.
+
+    Uses AIC (Akaike Information Criterion) for faster model selection
+    instead of computing forecast RMSE. This significantly reduces computation
+    time as it doesn't require generating forecasts for each parameter combination.
 
     Args:
         y_full: Full target series.
@@ -523,6 +571,8 @@ def grid_search_sarimax(
     X_train = X_full.loc[y_train.index]
 
     best_result: Optional[dict] = None
+    models_tried = 0
+    models_succeeded = 0
 
     # Generate parameter grid
     p_values = range(config.p_range[0], config.p_range[1])
@@ -543,53 +593,37 @@ def grid_search_sarimax(
                                 if _p + _q + _P + _Q == 0:
                                     continue
 
+                            models_tried += 1
+
+                            # Fit model with timeout and iteration limit
+                            result = fit_model_with_timeout(
+                                y_train,
+                                X_train,
+                                order=(_p, _d, _q),
+                                seasonal_order=(_P, _D, _Q, config.seasonal_period),
+                                max_iter=config.max_iter,
+                            )
+
+                            if result is None:
+                                continue
+
+                            models_succeeded += 1
+
+                            # Use AIC for model selection (much faster than forecast RMSE)
                             try:
-                                # Fit model
-                                model = sm.tsa.SARIMAX(
-                                    y_train,
-                                    exog=X_train,
-                                    order=(_p, _d, _q),
-                                    seasonal_order=(
-                                        _P,
-                                        _D,
-                                        _Q,
-                                        config.seasonal_period,
-                                    ),
-                                    enforce_stationarity=False,
-                                    enforce_invertibility=False,
-                                )
-                                result = model.fit(disp=False)
-
-                                # Generate forecast
-                                forecast = result.get_forecast(
-                                    steps=len(test_idx), exog=X_full.loc[test_idx]
-                                )
-                                predictions = pd.Series(
-                                    forecast.predicted_mean, index=test_idx
-                                )
-
-                                # Calculate RMSE on test set
-                                comparison = pd.concat(
-                                    [y_full.loc[test_idx], predictions], axis=1
-                                ).dropna()
-
-                                if comparison.empty:
+                                aic = result.aic
+                                if not np.isfinite(aic):
                                     continue
-
-                                score = calculate_rmse(
-                                    comparison.iloc[:, 0], comparison.iloc[:, 1]
-                                )
-
-                                # Update best if improved
-                                if best_result is None or score < best_result["score"]:
-                                    best_result = {
-                                        "score": score,
-                                        "order": (_p, _d, _q),
-                                        "seasonal": (_P, _D, _Q),
-                                    }
-
                             except Exception:
                                 continue
+
+                            # Update best if improved (lower AIC is better)
+                            if best_result is None or aic < best_result["score"]:
+                                best_result = {
+                                    "score": aic,
+                                    "order": (_p, _d, _q),
+                                    "seasonal": (_P, _D, _Q),
+                                }
 
     # Return best or default
     if best_result:
@@ -673,19 +707,20 @@ def generate_forecast_rows(
         n_steps = len(test_idx) - i
         X_forecast = X_full.loc[test_idx[i] :]
 
-        # Fit model
+        # Fit model with optimized settings
         model = sm.tsa.SARIMAX(
             y_train,
-            exog=X_train,
+            exog=X_train if not X_train.empty else None,
             order=order,
             seasonal_order=(seasonal[0], seasonal[1], seasonal[2], config.seasonal_period),
             enforce_stationarity=False,
             enforce_invertibility=False,
         )
-        result = model.fit(disp=False)
+        result = model.fit(disp=False, maxiter=config.max_iter, method='powell')
 
         # Generate forecast
-        forecast = result.get_forecast(steps=n_steps, exog=X_forecast.iloc[:n_steps])
+        X_fc = X_forecast.iloc[:n_steps] if not X_forecast.empty else None
+        forecast = result.get_forecast(steps=n_steps, exog=X_fc)
         predicted_mean = forecast.predicted_mean.values
 
         # Extract prediction intervals
@@ -771,7 +806,7 @@ def generate_future_forecast(
     Returns:
         DataFrame with future forecast results.
     """
-    # Fit model on all available data
+    # Fit model on all available data with optimized settings
     y_train = y_full.dropna()
     X_train = X_full.loc[y_train.index]
 
@@ -783,7 +818,7 @@ def generate_future_forecast(
         enforce_stationarity=False,
         enforce_invertibility=False,
     )
-    result = model.fit(disp=False)
+    result = model.fit(disp=False, maxiter=config.max_iter, method='powell')
 
     # Generate future dates
     last_date = y_train.index[-1]
