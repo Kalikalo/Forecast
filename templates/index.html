@@ -27,7 +27,7 @@
             <form action="{{ url_for('upload_file') }}" method="post" enctype="multipart/form-data" id="uploadForm">
                 <div class="upload-section">
                     <div class="file-drop-zone" id="dropZone">
-                        <input type="file" name="file" id="fileInput" accept=".csv,.xlsx,.xls" required>
+                        <input type="file" name="file" id="fileInput" accept=".csv,.txt,.xlsx,.xls" required>
                         <div class="drop-content">
                             <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -35,7 +35,7 @@
                                 <line x1="12" y1="3" x2="12" y2="15"/>
                             </svg>
                             <p>Drag & drop your file here or <span class="browse-link">browse</span></p>
-                            <p class="file-types">Supported: CSV, Excel (.xlsx, .xls)</p>
+                            <p class="file-types">Supported: CSV, TXT, Excel (.xlsx, .xls)</p>
                         </div>
                         <div class="file-name" id="fileName"></div>
                     </div>
@@ -106,7 +106,7 @@
                 <div class="info-card">
                     <div class="info-icon">1</div>
                     <h3>Upload Data</h3>
-                    <p>Upload your time series data in CSV or Excel format with a date column and numeric values.</p>
+                    <p>Upload your time series data in CSV, TXT, or Excel format. Supports files with or without headers.</p>
                 </div>
                 <div class="info-card">
                     <div class="info-icon">2</div>

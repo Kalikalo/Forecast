@@ -157,15 +157,163 @@ def detect_file_type(path: Path) -> str:
         path: Path to the file.
 
     Returns:
-        File type string: 'csv', 'excel', or raises ValueError.
+        File type string: 'csv', 'text', 'excel', or raises ValueError.
     """
     suffix = path.suffix.lower()
     if suffix == ".csv":
         return "csv"
+    elif suffix == ".txt":
+        return "text"
     elif suffix in [".xlsx", ".xls"]:
         return "excel"
     else:
-        raise ValueError(f"Unsupported file type: {suffix}. Use .csv, .xlsx, or .xls")
+        raise ValueError(f"Unsupported file type: {suffix}. Use .csv, .txt, .xlsx, or .xls")
+
+
+def detect_delimiter(file_path: Path, sample_lines: int = 5) -> str:
+    """
+    Auto-detect the delimiter used in a text file.
+
+    Args:
+        file_path: Path to the file.
+        sample_lines: Number of lines to sample for detection.
+
+    Returns:
+        Detected delimiter character.
+    """
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        lines = [f.readline() for _ in range(sample_lines)]
+
+    # Count potential delimiters
+    delimiters = [',', '\t', ';', '|']
+    delimiter_counts = {}
+
+    for delim in delimiters:
+        counts = [line.count(delim) for line in lines if line.strip()]
+        if counts:
+            # Check if delimiter count is consistent across lines
+            avg_count = sum(counts) / len(counts)
+            consistency = all(abs(c - avg_count) <= 1 for c in counts)
+            if consistency and avg_count > 0:
+                delimiter_counts[delim] = avg_count
+
+    # If no standard delimiter found, check for whitespace separation
+    if not delimiter_counts:
+        # Check if lines have multiple whitespace-separated values
+        for line in lines:
+            if line.strip():
+                parts = line.split()
+                if len(parts) > 1:
+                    return r'\s+'  # Regex for whitespace
+        return ','  # Default fallback
+
+    # Return delimiter with highest consistent count
+    return max(delimiter_counts, key=delimiter_counts.get)
+
+
+def detect_header(file_path: Path, delimiter: str) -> bool:
+    """
+    Detect if the first row of a file is a header row.
+
+    Args:
+        file_path: Path to the file.
+        delimiter: The delimiter used in the file.
+
+    Returns:
+        True if header row detected, False otherwise.
+    """
+    import re
+
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        first_line = f.readline().strip()
+        second_line = f.readline().strip()
+
+    if not first_line or not second_line:
+        return True  # Default to assuming header exists
+
+    # Split lines based on delimiter
+    if delimiter == r'\s+':
+        first_parts = first_line.split()
+        second_parts = second_line.split()
+    else:
+        first_parts = first_line.split(delimiter)
+        second_parts = second_line.split(delimiter)
+
+    # Count numeric values in each row
+    def count_numeric(parts):
+        count = 0
+        for p in parts:
+            p = p.strip()
+            # Check if it looks like a number (including scientific notation)
+            # Handle both US (.) and European (,) decimal separators
+            try:
+                float(p.replace(',', '.'))
+                count += 1
+            except ValueError:
+                # Check for datetime format (YYYY-MM-DD or similar)
+                if re.match(r'^\d{4}[-/]\d{2}[-/]\d{2}', p):
+                    count += 1
+        return count
+
+    first_numeric = count_numeric(first_parts)
+    second_numeric = count_numeric(second_parts)
+
+    # If first row has significantly fewer numeric values than second row,
+    # it's likely a header
+    if first_numeric < second_numeric * 0.5:
+        return True
+
+    # If first row is mostly numeric (like the data rows), no header
+    if first_numeric >= len(first_parts) * 0.7:
+        return False
+
+    return True  # Default to assuming header exists
+
+
+def detect_decimal_separator(file_path: Path, delimiter: str) -> str:
+    """
+    Detect if the file uses comma or period as decimal separator.
+
+    Args:
+        file_path: Path to the file.
+        delimiter: The delimiter used in the file.
+
+    Returns:
+        ',' for European format, '.' for US format.
+    """
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        lines = [f.readline() for _ in range(10)]
+
+    # Count patterns that suggest comma vs period as decimal separator
+    comma_decimal_count = 0
+    period_decimal_count = 0
+
+    import re
+
+    for line in lines:
+        if not line.strip():
+            continue
+
+        # Split by delimiter
+        if delimiter == r'\s+':
+            parts = line.split()
+        else:
+            parts = line.split(delimiter)
+
+        for p in parts:
+            p = p.strip()
+            # Pattern for European format: digits,digits (e.g., "123,45")
+            # Must not have period in same number to avoid matching thousands separator
+            if re.match(r'^-?\d+,\d+$', p) and '.' not in p:
+                comma_decimal_count += 1
+            # Pattern for US format: digits.digits (e.g., "123.45")
+            elif re.match(r'^-?\d+\.\d+$', p) and ',' not in p:
+                period_decimal_count += 1
+
+    # If comma decimals are more common, use European format
+    if comma_decimal_count > period_decimal_count:
+        return ','
+    return '.'
 
 
 def detect_date_column(df: pd.DataFrame) -> str:
@@ -206,12 +354,13 @@ def load_dataset(
     config: Optional[ForecastConfig] = None,
 ) -> tuple[pd.DataFrame, str]:
     """
-    Load a CSV or Excel dataset and prepare it for forecasting.
+    Load a CSV, TXT, or Excel dataset and prepare it for forecasting.
 
-    Supports automatic file type detection and flexible date parsing.
+    Supports automatic file type detection, delimiter detection, header detection,
+    and flexible date parsing. Handles files with or without headers.
 
     Args:
-        path: Path to the CSV or Excel file.
+        path: Path to the CSV, TXT, or Excel file.
         config: Optional configuration for column names and frequency.
 
     Returns:
@@ -223,10 +372,43 @@ def load_dataset(
     # Detect and load file
     file_type = detect_file_type(path)
 
-    if file_type == "csv":
-        df = pd.read_csv(path)
-    else:
+    if file_type == "excel":
         df = pd.read_excel(path)
+    else:
+        # For CSV and TXT files, auto-detect delimiter, header, and decimal separator
+        delimiter = detect_delimiter(path)
+        has_header = detect_header(path, delimiter)
+        decimal_sep = detect_decimal_separator(path, delimiter)
+
+        # Determine separator parameter for pandas
+        if delimiter == r'\s+':
+            sep = r'\s+'
+            regex_sep = True
+        else:
+            sep = delimiter
+            regex_sep = False
+
+        # Build read_csv arguments
+        read_args = {'sep': sep, 'decimal': decimal_sep}
+        if regex_sep:
+            read_args['engine'] = 'python'
+
+        # Read file with detected settings
+        if has_header:
+            df = pd.read_csv(path, **read_args)
+        else:
+            # No header - read and assign default column names
+            df = pd.read_csv(path, header=None, **read_args)
+
+            # Assign default column names: Date, Value, Feature_1, Feature_2, ...
+            num_cols = len(df.columns)
+            if num_cols == 1:
+                df.columns = ['Date']
+            elif num_cols == 2:
+                df.columns = ['Date', 'Value']
+            else:
+                col_names = ['Date', 'Value'] + [f'Feature_{i}' for i in range(1, num_cols - 1)]
+                df.columns = col_names
 
     # Detect or use specified date column
     date_col = config.date_column or detect_date_column(df)

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 UPLOAD_FOLDER = Path("uploads")
 RESULTS_FOLDER = Path("forecast_results")
-ALLOWED_EXTENSIONS = {"csv", "xlsx", "xls"}
+ALLOWED_EXTENSIONS = {"csv", "xlsx", "xls", "txt"}
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "forecast-platform-secret-key-change-in-production")
@@ -68,7 +68,7 @@ def upload_file():
             return redirect(url_for("index"))
 
         if not allowed_file(file.filename):
-            flash("Invalid file type. Please upload CSV or Excel files (.csv, .xlsx, .xls)", "error")
+            flash("Invalid file type. Please upload CSV, TXT, or Excel files (.csv, .txt, .xlsx, .xls)", "error")
             return redirect(url_for("index"))
 
         # Get forecast parameters from form
@@ -166,7 +166,7 @@ def api_forecast():
         file = request.files["file"]
 
         if file.filename == "" or not allowed_file(file.filename):
-            return jsonify({"error": "Invalid file. Supported formats: .csv, .xlsx, .xls"}), 400
+            return jsonify({"error": "Invalid file. Supported formats: .csv, .txt, .xlsx, .xls"}), 400
 
         # Get parameters from form or JSON
         freq = request.form.get("freq", "Q")
